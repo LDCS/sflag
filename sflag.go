@@ -1,8 +1,8 @@
 // Package sflag at time of writing, is the only known flags package variant that is 100% DRY, free of fugly pointer syntax and uses clean struct syntax.
 // Implementation makes use of reflection and struct tags.
 // Limitation: Presence of a boolean flag requires that there be no STANDALONE true or false parameters, use "--Foo=true" syntax instead of "--Foo true".
-//             This is because the underlying flags package will stop processing on seeing the first standalone true/false value
-//				(This is because it will considers the preceding bool flag (--Foo) set by its presence alone)
+// This is because the underlying flags package will stop processing on seeing the first standalone true/false value
+// (This is because it will considers the preceding bool flag (--Foo) set by its presence alone)
 // Limitation: Commandline args must start with an upcase char, since the implementation uses reflection which fails on unexported fields
 package sflag
 

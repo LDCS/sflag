@@ -1,7 +1,9 @@
-// Package sflag is the only known flags package variant, at the time of writing, that is 100% DRY, free of fugly pointer syntax and uses clean struct syntax.
+// Package sflag at time of writing, is the only known flags package variant that is 100% DRY, free of fugly pointer syntax and uses clean struct syntax.
 // Implementation makes use of reflection and struct tags.
-//
-// BUG() Presence of a boolean flag requires that there be no STANDALONE true or false parameters, use "--Foo=true" syntax instead of "--Foo true".
+// Limitation: Presence of a boolean flag requires that there be no STANDALONE true or false parameters, use "--Foo=true" syntax instead of "--Foo true".
+//             This is because the underlying flags package will stop processing on seeing the first standalone true/false value
+//				(This is because it will considers the preceding bool flag (--Foo) set by its presence alone)
+// Limitation: Commandline args must start with an upcase char, since the implementation uses reflection which fails on unexported fields
 package sflag
 
 import (
@@ -10,12 +12,27 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
-	"unsafe"
 )
 
-// Parse runs through the struct members and the struct tags of the struct that will hold the program commandline options.
-// It uses that information to set up the call to golang's flag package's Parse() function
+var (
+	visited map[string]bool
+)
+
+func noteVisited(_flag *flag.Flag) {
+	visited[_flag.Name] = true
+}
+
+// Parse iterates through the members of the struct.
+// Using type info obtained via reflection, and parsing the struct tag for usage and default value, it sets up golang's flag package to actually parse
+// Normally, the rightmost pipe char in the tag is used to delineate between the Description (on the left) and Default value (on the right)
+// (However, you can change delineator to the first char of the tag (after eliminating leading whitespace) if that char is not alphabetic)
+// Fields with no tag or whitespace-only tags are ignored
+// Non-nil pointer fields are ignored
+// Nil pointer fields will be left nil if that flag is not set on commandline (and the tag is not parsed for a default value)
+// Parameters not consumed by flags will be copied to the last field of type []string
 func Parse(ss interface{}) {
+	visited = make(map[string]bool)
+	pointers := map[string]interface{}{}
 	if reflect.TypeOf(ss).Kind() != reflect.Ptr {
 		panic("sflag.Parse was not provided a pointer arg")
 	}
@@ -29,7 +46,7 @@ func Parse(ss interface{}) {
 	moreusage := ""
 
 	var flags = *flag.NewFlagSet(os.Args[0], flag.PanicOnError)
-	var argsptr *[]string
+	var argsiface interface{}
 
 	hasBoolArg := false
 
@@ -43,8 +60,7 @@ func Parse(ss interface{}) {
 			continue
 		}
 		if pp.Type.String() == "[]string" {
-			up := unsafe.Pointer(vv.UnsafeAddr())
-			argsptr = (*[]string)(up)
+			argsiface = vv.Addr().Interface()
 			continue
 		}
 		tag := strings.TrimSpace((string)(pp.Tag))
@@ -69,45 +85,73 @@ func Parse(ss interface{}) {
 		if len(parts) > 0 {
 			moreusage += "\n\t--" + pp.Name + ": " + part1 + " <-- Default, " + pp.Type.String() + " # " + part0
 		}
-		if len(parts) == 1 {
-			up := unsafe.Pointer(vv.UnsafeAddr())
+		if pp.Type.Kind() == reflect.Ptr {
+			if vv.Elem().Kind() != reflect.Invalid {
+				continue
+			}
 			switch pp.Type.String() {
-			case "string":
-				flags.StringVar((*string)(up), pp.Name, vv.String(), " <--default, string # "+part0)
-			case "int":
-				flags.IntVar((*int)(up), pp.Name, int(vv.Int()), " <--default, int # "+part0)
-			case "bool":
-				flags.BoolVar((*bool)(up), pp.Name, bool(vv.Bool()), " <--default, bool # "+part0)
+			case "*string":
+				tempstr := ""
+				pointers[pp.Name] = &tempstr
+				flags.StringVar(&tempstr, pp.Name, tempstr, "")
+			case "*int":
+				tempint := 0
+				pointers[pp.Name] = &tempint
+				flags.IntVar(&tempint, pp.Name, tempint, "")
+			case "*bool":
+				tempbool := false
+				pointers[pp.Name] = &tempbool
+				flags.BoolVar(&tempbool, pp.Name, tempbool, "")
+			case "*int64":
+				tempint64 := int64(0)
+				pointers[pp.Name] = &tempint64
+				flags.Int64Var(&tempint64, pp.Name, tempint64, "")
+			case "*float64":
+				tempfloat64 := 0.0
+				pointers[pp.Name] = &tempfloat64
+				flags.Float64Var(&tempfloat64, pp.Name, tempfloat64, "")
+			default:
+				continue
+			}
+		}
+
+		if len(parts) == 1 {
+			switch pp.Type.Kind() {
+			case reflect.String:
+				flags.StringVar(vv.Addr().Interface().(*string), pp.Name, vv.String(), " <--default, string # "+part0)
+			case reflect.Int:
+				flags.IntVar(vv.Addr().Interface().(*int), pp.Name, int(vv.Int()), " <--default, int # "+part0)
+			case reflect.Bool:
+				flags.BoolVar(vv.Addr().Interface().(*bool), pp.Name, bool(vv.Bool()), " <--default, bool # "+part0)
 				hasBoolArg = true
-			case "int64":
-				flags.Int64Var((*int64)(up), pp.Name, vv.Int(), " <--default, int64 # "+part0)
-			case "float64":
-				flags.Float64Var((*float64)(up), pp.Name, vv.Float(), " <--default, float64 # "+part0)
+			case reflect.Int64:
+				flags.Int64Var(vv.Addr().Interface().(*int64), pp.Name, vv.Int(), " <--default, int64 # "+part0)
+			case reflect.Float64:
+				flags.Float64Var(vv.Addr().Interface().(*float64), pp.Name, vv.Float(), " <--default, float64 # "+part0)
 			}
 		}
 		if len(parts) == 2 {
-			up := unsafe.Pointer(vv.UnsafeAddr())
-			switch pp.Type.String() {
-			case "string":
+			switch pp.Type.Kind() {
+			case reflect.String:
 				vv.SetString(part1)
-				flags.StringVar((*string)(up), pp.Name, part1, " <--default, string # "+part0)
-			case "int":
+				flags.StringVar(vv.Addr().Interface().(*string), pp.Name, part1, " <--default, string # "+part0)
+			case reflect.Int:
 				inum, _ := strconv.ParseInt(part1, 10, 64)
 				vv.SetInt(inum)
-				flags.IntVar((*int)(up), pp.Name, int(inum), " <--default, int # "+part0)
-			case "bool":
+				flags.IntVar(vv.Addr().Interface().(*int), pp.Name, int(inum), " <--default, int # "+part0)
+			case reflect.Bool:
 				bnum, _ := strconv.ParseBool(part1)
 				vv.SetBool(bnum)
-				flags.BoolVar((*bool)(up), pp.Name, bool(bnum), " <--default, bool # "+part0)
+				flags.BoolVar(vv.Addr().Interface().(*bool), pp.Name, bool(bnum), " <--default, bool # "+part0)
 				hasBoolArg = true
-			case "int64":
+			case reflect.Int64:
 				jnum, _ := strconv.ParseInt(part1, 10, 64)
 				vv.SetInt(jnum)
-				flags.Int64Var((*int64)(up), pp.Name, jnum, " <--default, int64 # "+part0)
-			case "float64":
+				flags.Int64Var(vv.Addr().Interface().(*int64), pp.Name, jnum, " <--default, int64 # "+part0)
+			case reflect.Float64:
 				fnum, _ := strconv.ParseFloat(part1, 64)
 				vv.SetFloat(fnum)
-				flags.Float64Var((*float64)(up), pp.Name, fnum, " <--default, float64 # "+part0)
+				flags.Float64Var(vv.Addr().Interface().(*float64), pp.Name, fnum, " <--default, float64 # "+part0)
 			}
 		}
 	}
@@ -124,8 +168,32 @@ func Parse(ss interface{}) {
 		}
 	}
 	flags.Parse(os.Args[1:])
-	if argsptr != nil {
-		*argsptr = make([]string, len(flags.Args()))
-		copy(*argsptr, flags.Args())
+	if argsiface != nil {
+		*argsiface.(*[]string) = make([]string, len(flags.Args()))
+		copy(*argsiface.(*[]string), flags.Args())
+	}
+
+	flags.Visit(noteVisited) // note all the visited flags, needed below
+
+	// Set all pointer-type flags that actually had values set
+	for kk := range pointers {
+		if visited[kk] {
+			pp, _ := sstype.FieldByName(kk)
+			vv := ssvalue.FieldByName(kk)
+			switch pp.Type.String() {
+			case "*string":
+				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+			case "*int":
+				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+			case "*bool":
+				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+			case "*int64":
+				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+			case "*float64":
+				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+			default:
+				continue
+			}
+		}
 	}
 }

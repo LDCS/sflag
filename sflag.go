@@ -3,8 +3,8 @@
 // Implementation makes use of reflection and struct tags, in manner not dissimilar to other published flag variants.
 //
 // Limitation: Presence of a boolean flag requires that there be no STANDALONE true or false parameters, use "--Foo=true" syntax instead of "--Foo true".
-//             This is because the underlying std flag package will stop processing on seeing the first standalone true/false value.
-//				(This is because it will considers the preceding bool flag (--Foo) set by its presence alone).
+//This is because the underlying std flag package will stop processing on seeing the first standalone true/false value.
+//(This is because it will considers the preceding bool flag (--Foo) set by its presence alone).
 package sflag
 
 import (
@@ -24,17 +24,18 @@ func noteVisited(_flag *flag.Flag) {
 }
 
 // Parse iterates through the members of the struct.
-/* Members are set up for std flag package to do the actual parsing, using type obtained via reflection and info from struct tag for usage and default setting.
-   Normally, the rightmost pipe char in the tag is used to delineate between Description (on left) and Default value (on right).
-   (You can override delineator to the first char of the tag (after eliminating leading whitespace) if such char is not alphabetic).
-   Fields with no tag or whitespace-only tags are ignored.
-   Non-nil pointer fields are ignored.
-   Nil pointer fields will be left nil if that flag is not set on commandline (and the tag is not parsed for a default value).
-   Parameters not consumed by flags will be copied to the last field of type []string
-   Flags starting with lowercase letter require that the coresponding member ends in single underscore.
-   Provide string member Usage initialized to brief program description.  Parse will append member descriptions to that string.
-   Provide []string member Args if you want to want to retrieve unconsumed flags.
-   Initialize []string member Args to the string array you want to parse instead of os.Args[1:].
+/*
+Members are set up for std flag package to do the actual parsing, using type obtained via reflection and info from struct tag for usage and default setting.
+Normally, the rightmost pipe char in the tag is used to delineate between Description (on left) and Default value (on right).
+(You can override delineator to the first char of the tag (after eliminating leading whitespace) if such char is not alphabetic).
+Fields with no tag or whitespace-only tags are ignored.
+Non-nil pointer fields are ignored.
+Nil pointer fields will be left nil if that flag is not set on commandline (and the tag is not parsed for a default value).
+Parameters not consumed by flags will be copied to the last field of type []string
+Flags starting with lowercase letter require that the coresponding member ends in single underscore.
+Provide string member Usage initialized to brief program description.  Parse will append member descriptions to that string.
+Provide []string member Args if you want to want to retrieve unconsumed flags.
+Initialize []string member Args to the string array you want to parse instead of os.Args[1:].
 */
 func Parse(ss interface{}) {
 	visited = make(map[string]bool)

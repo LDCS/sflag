@@ -1,9 +1,10 @@
-// Package sflag at time of writing, is the only known flags package variant that is 100% DRY, free of fugly pointer syntax and uses clean struct syntax.
-// Implementation makes use of reflection and struct tags.
+// Package sflag is a flag package variant that is 100% DRY, free of fugly pointer syntax and uses clean struct syntax.
+//
+// Implementation makes use of reflection and struct tags, in manner not dissimilar to other published flag variants.
+//
 // Limitation: Presence of a boolean flag requires that there be no STANDALONE true or false parameters, use "--Foo=true" syntax instead of "--Foo true".
-// This is because the underlying flags package will stop processing on seeing the first standalone true/false value
-// (This is because it will considers the preceding bool flag (--Foo) set by its presence alone)
-// Limitation: Commandline args must start with an upcase char, since the implementation uses reflection which fails on unexported fields
+//             This is because the underlying std flag package will stop processing on seeing the first standalone true/false value.
+//				(This is because it will considers the preceding bool flag (--Foo) set by its presence alone).
 package sflag
 
 import (
@@ -23,13 +24,18 @@ func noteVisited(_flag *flag.Flag) {
 }
 
 // Parse iterates through the members of the struct.
-// Using type info obtained via reflection, and parsing the struct tag for usage and default value, it sets up golang's flag package to actually parse
-// Normally, the rightmost pipe char in the tag is used to delineate between the Description (on the left) and Default value (on the right)
-// (However, you can change delineator to the first char of the tag (after eliminating leading whitespace) if that char is not alphabetic)
-// Fields with no tag or whitespace-only tags are ignored
-// Non-nil pointer fields are ignored
-// Nil pointer fields will be left nil if that flag is not set on commandline (and the tag is not parsed for a default value)
-// Parameters not consumed by flags will be copied to the last field of type []string
+/* Members are set up for std flag package to do the actual parsing, using type obtained via reflection and info from struct tag for usage and default setting.
+   Normally, the rightmost pipe char in the tag is used to delineate between Description (on left) and Default value (on right).
+   (You can override delineator to the first char of the tag (after eliminating leading whitespace) if such char is not alphabetic).
+   Fields with no tag or whitespace-only tags are ignored.
+   Non-nil pointer fields are ignored.
+   Nil pointer fields will be left nil if that flag is not set on commandline (and the tag is not parsed for a default value).
+   Parameters not consumed by flags will be copied to the last field of type []string
+   Flags starting with lowercase letter require that the coresponding member ends in single underscore.
+   Provide string member Usage initialized to brief program description.  Parse will append member descriptions to that string.
+   Provide []string member Args if you want to want to retrieve unconsumed flags.
+   Initialize []string member Args to the string array you want to parse instead of os.Args[1:].
+*/
 func Parse(ss interface{}) {
 	visited = make(map[string]bool)
 	pointers := map[string]interface{}{}
@@ -43,36 +49,54 @@ func Parse(ss interface{}) {
 		panic("sflag.Parse was not provided a pointer to a struct")
 	}
 
-	moreusage := ""
-
-	var flags = *flag.NewFlagSet(os.Args[0], flag.PanicOnError)
 	var argsiface interface{}
+	args	:= make([]string, len(os.Args) - 1)
+	copy(args, os.Args[1:])
 
+	progname:= os.Args[0]
+	if pp, ok := sstype.FieldByName("Args"); ok {
+		if pp.Type.String() == "[]string" {	// caller wanted to override os.Args and/or retrieve unconsumed flags
+			vv	:= ssvalue.FieldByName("Args")
+			if len(*vv.Addr().Interface().(*[]string)) == 0 {
+			} else {	// caller wanted to override os.Args
+				args	= make([]string, len(*vv.Addr().Interface().(*[]string)))
+				copy(args, *vv.Addr().Interface().(*[]string))
+			}
+			argsiface	= vv.Addr().Interface()
+		}
+	}
+
+	moreusage := ""
 	hasBoolArg := false
+	flags := *flag.NewFlagSet(progname, flag.PanicOnError)
 
 	for ii := 0; ii < sstype.NumField(); ii++ {
 		pp := sstype.Field(ii)
 		vv := ssvalue.Field(ii)
-		if pp.Anonymous {
-			continue
+		switch {
+		case pp.Anonymous		: continue	// Skip embedded fields
+		case pp.Name == "Usage" : continue	// Not a flag
+		case pp.Type.String() == "[]string"	: continue	// Already handled Args, and not interested in other such members
+		case (pp.Type.Kind() == reflect.Ptr) && (vv.Elem().Kind() != reflect.Invalid)	: continue	// Ignore non-nil pointer members
 		}
-		if pp.Name == "Usage" {
-			continue
-		}
-		if pp.Type.String() == "[]string" {
-			argsiface = vv.Addr().Interface()
-			continue
-		}
+
 		tag := strings.TrimSpace((string)(pp.Tag))
 		if tag == "" {
 			continue
 		}
+
+		flagname	:= pp.Name
+		if nn := len(pp.Name) - 1; flagname[nn] == '_' {	// User wants to look for --f* instead of --F*
+			flagname	= strings.ToLower(pp.Name[:1]) + pp.Name[1:nn]
+		}
+
 		splitChar := tag[0:1]
 		if strings.Contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", splitChar) {
 			splitChar = "|"
 		} else {
 			tag = tag[1:]
 		}
+
 		parts := strings.Split(tag, splitChar)
 		part0 := ""
 		part1 := ""
@@ -82,34 +106,28 @@ func Parse(ss interface{}) {
 		if len(parts) > 1 {
 			part1 = strings.TrimSpace(parts[1])
 		}
-		if len(parts) > 0 {
-			moreusage += "\n\t--" + pp.Name + ": " + part1 + " <-- Default, " + pp.Type.String() + " # " + part0
-		}
 		if pp.Type.Kind() == reflect.Ptr {
-			if vv.Elem().Kind() != reflect.Invalid {
-				continue
-			}
 			switch pp.Type.String() {
 			case "*string":
 				tempstr := ""
-				pointers[pp.Name] = &tempstr
-				flags.StringVar(&tempstr, pp.Name, tempstr, "")
+				pointers[flagname] = &tempstr
+				flags.StringVar(&tempstr, flagname, tempstr, "")
 			case "*int":
 				tempint := 0
-				pointers[pp.Name] = &tempint
-				flags.IntVar(&tempint, pp.Name, tempint, "")
+				pointers[flagname] = &tempint
+				flags.IntVar(&tempint, flagname, tempint, "")
 			case "*bool":
 				tempbool := false
-				pointers[pp.Name] = &tempbool
-				flags.BoolVar(&tempbool, pp.Name, tempbool, "")
+				pointers[flagname] = &tempbool
+				flags.BoolVar(&tempbool, flagname, tempbool, "")
 			case "*int64":
 				tempint64 := int64(0)
-				pointers[pp.Name] = &tempint64
-				flags.Int64Var(&tempint64, pp.Name, tempint64, "")
+				pointers[flagname] = &tempint64
+				flags.Int64Var(&tempint64, flagname, tempint64, "")
 			case "*float64":
 				tempfloat64 := 0.0
-				pointers[pp.Name] = &tempfloat64
-				flags.Float64Var(&tempfloat64, pp.Name, tempfloat64, "")
+				pointers[flagname] = &tempfloat64
+				flags.Float64Var(&tempfloat64, flagname, tempfloat64, "")
 			default:
 				continue
 			}
@@ -118,56 +136,68 @@ func Parse(ss interface{}) {
 		if len(parts) == 1 {
 			switch pp.Type.Kind() {
 			case reflect.String:
-				flags.StringVar(vv.Addr().Interface().(*string), pp.Name, vv.String(), " <--default, string # "+part0)
+				flags.StringVar(vv.Addr().Interface().(*string), flagname, vv.String(), " <--default, string # "+part0)
 			case reflect.Int:
-				flags.IntVar(vv.Addr().Interface().(*int), pp.Name, int(vv.Int()), " <--default, int # "+part0)
+				flags.IntVar(vv.Addr().Interface().(*int), flagname, int(vv.Int()), " <--default, int # "+part0)
 			case reflect.Bool:
-				flags.BoolVar(vv.Addr().Interface().(*bool), pp.Name, bool(vv.Bool()), " <--default, bool # "+part0)
+				flags.BoolVar(vv.Addr().Interface().(*bool), flagname, bool(vv.Bool()), " <--default, bool # "+part0)
 				hasBoolArg = true
 			case reflect.Int64:
-				flags.Int64Var(vv.Addr().Interface().(*int64), pp.Name, vv.Int(), " <--default, int64 # "+part0)
+				flags.Int64Var(vv.Addr().Interface().(*int64), flagname, vv.Int(), " <--default, int64 # "+part0)
 			case reflect.Float64:
-				flags.Float64Var(vv.Addr().Interface().(*float64), pp.Name, vv.Float(), " <--default, float64 # "+part0)
+				flags.Float64Var(vv.Addr().Interface().(*float64), flagname, vv.Float(), " <--default, float64 # "+part0)
+			default:
+				continue
 			}
 		}
+
 		if len(parts) == 2 {
 			switch pp.Type.Kind() {
 			case reflect.String:
 				vv.SetString(part1)
-				flags.StringVar(vv.Addr().Interface().(*string), pp.Name, part1, " <--default, string # "+part0)
+				flags.StringVar(vv.Addr().Interface().(*string), flagname, part1, " <--default, string # "+part0)
 			case reflect.Int:
 				inum, _ := strconv.ParseInt(part1, 10, 64)
 				vv.SetInt(inum)
-				flags.IntVar(vv.Addr().Interface().(*int), pp.Name, int(inum), " <--default, int # "+part0)
+				flags.IntVar(vv.Addr().Interface().(*int), flagname, int(inum), " <--default, int # "+part0)
 			case reflect.Bool:
 				bnum, _ := strconv.ParseBool(part1)
 				vv.SetBool(bnum)
-				flags.BoolVar(vv.Addr().Interface().(*bool), pp.Name, bool(bnum), " <--default, bool # "+part0)
+				flags.BoolVar(vv.Addr().Interface().(*bool), flagname, bool(bnum), " <--default, bool # "+part0)
 				hasBoolArg = true
 			case reflect.Int64:
 				jnum, _ := strconv.ParseInt(part1, 10, 64)
 				vv.SetInt(jnum)
-				flags.Int64Var(vv.Addr().Interface().(*int64), pp.Name, jnum, " <--default, int64 # "+part0)
+				flags.Int64Var(vv.Addr().Interface().(*int64), flagname, jnum, " <--default, int64 # "+part0)
 			case reflect.Float64:
 				fnum, _ := strconv.ParseFloat(part1, 64)
 				vv.SetFloat(fnum)
-				flags.Float64Var(vv.Addr().Interface().(*float64), pp.Name, fnum, " <--default, float64 # "+part0)
+				flags.Float64Var(vv.Addr().Interface().(*float64), flagname, fnum, " <--default, float64 # "+part0)
+			default:
+				continue
 			}
+		}
+
+		if len(parts) > 0 {
+			moreusage += "\n\t--" + flagname + ": " + part1 + " <-- Default, " + pp.Type.String() + " # " + part0
 		}
 	}
 
-	pp, _ := sstype.FieldByName("Usage")
-	vv := ssvalue.FieldByName("Usage")
-	vv.SetString("\n Usage of " + os.Args[0] + " # " + (string)(pp.Tag) + "\n ARGS:" + moreusage)
+	if pp, ok := sstype.FieldByName("Usage"); ok {
+		vv		:= ssvalue.FieldByName("Usage")
+		vv.SetString("\n Usage of " + progname + " # " + (string)(pp.Tag) + "\n ARGS:" + moreusage)
+	}
+
 	if hasBoolArg {
-		for _, arg := range os.Args[1:] {
+		for _, arg := range args {
 			switch strings.ToLower(arg) {
 			case "true", "false":
 				panic("Golang flag package requires \"--Foo=bar\" instead of \"--Foo bar\" syntax for bool args")
 			}
 		}
 	}
-	flags.Parse(os.Args[1:])
+
+	flags.Parse(args)
 	if argsiface != nil {
 		*argsiface.(*[]string) = make([]string, len(flags.Args()))
 		copy(*argsiface.(*[]string), flags.Args())
@@ -176,21 +206,25 @@ func Parse(ss interface{}) {
 	flags.Visit(noteVisited) // note all the visited flags, needed below
 
 	// Set all pointer-type flags that actually had values set
-	for kk := range pointers {
-		if visited[kk] {
-			pp, _ := sstype.FieldByName(kk)
-			vv := ssvalue.FieldByName(kk)
+	for flagname := range pointers {
+		if visited[flagname] {
+			fieldname	:= flagname
+			if flagname[:1] != strings.ToUpper(flagname[:1]) {
+				fieldname	= strings.ToUpper(flagname[:1]) + flagname[1:] + "_"
+			}
+			pp, _ := sstype.FieldByName(fieldname)
+			vv := ssvalue.FieldByName(fieldname)
 			switch pp.Type.String() {
 			case "*string":
-				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+				vv.Set(reflect.ValueOf(pointers[flagname]))
 			case "*int":
-				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+				vv.Set(reflect.ValueOf(pointers[flagname]))
 			case "*bool":
-				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+				vv.Set(reflect.ValueOf(pointers[flagname]))
 			case "*int64":
-				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+				vv.Set(reflect.ValueOf(pointers[flagname]))
 			case "*float64":
-				vv.Set(reflect.ValueOf(pointers[pp.Name]))
+				vv.Set(reflect.ValueOf(pointers[flagname]))
 			default:
 				continue
 			}

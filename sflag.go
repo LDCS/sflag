@@ -1,10 +1,7 @@
 // Package sflag is a flag package variant that is 100% DRY, free of fugly pointer syntax and uses clean struct syntax.
 //
-// Implementation makes use of reflection and struct tags, in manner not dissimilar to other published flag variants.
+// Implementation makes use of reflection and struct tags, in manner similar to previously published flag variants.
 //
-// Limitation: Presence of a boolean flag requires that there be no STANDALONE true or false parameters, use "--Foo=true" syntax instead of "--Foo true".
-//This is because the underlying std flag package will stop processing on seeing the first standalone true/false value.
-//(This is because it will considers the preceding bool flag (--Foo) set by its presence alone).
 package sflag
 
 import (
@@ -13,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 var (
@@ -23,21 +21,26 @@ func noteVisited(_flag *flag.Flag) {
 	visited[_flag.Name] = true
 }
 
-// Parse iterates through the members of the struct.
-/*
-Members are set up for std flag package to do the actual parsing, using type obtained via reflection and info from struct tag for usage and default setting.
-Normally, the rightmost pipe char in the tag is used to delineate between Description (on left) and Default value (on right).
-(You can override delineator to the first char of the tag (after eliminating leading whitespace) if such char is not alphabetic).
-Fields with no tag or whitespace-only tags are ignored.
-Non-nil pointer fields are ignored.
-Nil pointer fields will be left nil if that flag is not set on commandline (and the tag is not parsed for a default value).
-Parameters not consumed by flags will be copied to the last field of type []string
-Flags starting with lowercase letter require that the coresponding member ends in single underscore.
-Provide string member Usage initialized to brief program description.  Parse will append member descriptions to that string.
-Provide []string member Args if you want to want to retrieve unconsumed flags.
-Initialize []string member Args to the string array you want to parse instead of os.Args[1:].
-*/
-func Parse(ss interface{}) {
+// Parse iterates through the members of the struct.  Notes:
+//
+//     Members are set up for std flag package to do the actual parsing, using type obtained via reflection and info from struct tag for usage and default setting.
+//     Normally, the rightmost pipe char in the tag is used to delineate between Description (on left) and Default value (on right).
+//     (You can override delineator to the first char of the tag (after eliminating leading whitespace) if such char is not alphabetic).
+//     Fields with no tag or whitespace-only tags are ignored.
+//     Non-nil pointer fields are ignored.
+//     Nil pointer fields will be left nil if that flag is not set on commandline (and the tag is not parsed for a default value).
+//     Flags starting with lowercase letter require that the coresponding member ends in single underscore.
+//     Provide string member Usage initialized to brief program description.  Parse will append member descriptions to that string.
+//     Provide []string member Args if you want to want to retrieve unconsumed flags.
+//     Initialize []string member Args to the string array you want to parse instead of os.Args[1:].
+func Parse(ss interface{}) { parseInternal(ss, true) }
+
+// Parse2 is identical to Parse, except panics if there is both (1) a boolean flag and (2) a standalone true/false argument.
+// It reminds you to use "--Foo=true" syntax (instead of "--Foo true" which would terminate the stdlib's flag processing for bool flag Foo, which is considered set by its presence alone).
+// The downside of using this func is that unrelated presence of true/false results in progam panic.
+func Parse2(ss interface{}) { parseInternal(ss, false) }
+
+func parseInternal(ss interface{}, _permitStandaloneBool bool) {
 	visited = make(map[string]bool)
 	pointers := map[string]interface{}{}
 	if reflect.TypeOf(ss).Kind() != reflect.Ptr {
@@ -51,19 +54,19 @@ func Parse(ss interface{}) {
 	}
 
 	var argsiface interface{}
-	args	:= make([]string, len(os.Args) - 1)
+	args := make([]string, len(os.Args)-1)
 	copy(args, os.Args[1:])
 
-	progname:= os.Args[0]
+	progname := os.Args[0]
 	if pp, ok := sstype.FieldByName("Args"); ok {
-		if pp.Type.String() == "[]string" {	// caller wanted to override os.Args and/or retrieve unconsumed flags
-			vv	:= ssvalue.FieldByName("Args")
+		if pp.Type.String() == "[]string" { // caller wanted to override os.Args and/or retrieve unconsumed flags
+			vv := ssvalue.FieldByName("Args")
 			if len(*vv.Addr().Interface().(*[]string)) == 0 {
-			} else {	// caller wanted to override os.Args
-				args	= make([]string, len(*vv.Addr().Interface().(*[]string)))
+			} else { // caller wanted to override os.Args
+				args = make([]string, len(*vv.Addr().Interface().(*[]string)))
 				copy(args, *vv.Addr().Interface().(*[]string))
 			}
-			argsiface	= vv.Addr().Interface()
+			argsiface = vv.Addr().Interface()
 		}
 	}
 
@@ -75,10 +78,14 @@ func Parse(ss interface{}) {
 		pp := sstype.Field(ii)
 		vv := ssvalue.Field(ii)
 		switch {
-		case pp.Anonymous		: continue	// Skip embedded fields
-		case pp.Name == "Usage" : continue	// Not a flag
-		case pp.Type.String() == "[]string"	: continue	// Already handled Args, and not interested in other such members
-		case (pp.Type.Kind() == reflect.Ptr) && (vv.Elem().Kind() != reflect.Invalid)	: continue	// Ignore non-nil pointer members
+		case pp.Anonymous:
+			continue // Skip embedded fields
+		case pp.Name == "Usage":
+			continue // Not a flag
+		case pp.Type.String() == "[]string":
+			continue // Already handled Args, and not interested in other such members
+		case (pp.Type.Kind() == reflect.Ptr) && (vv.Elem().Kind() != reflect.Invalid):
+			continue // Ignore non-nil pointer members
 		}
 
 		tag := strings.TrimSpace((string)(pp.Tag))
@@ -86,27 +93,28 @@ func Parse(ss interface{}) {
 			continue
 		}
 
-		flagname	:= pp.Name
-		if nn := len(pp.Name) - 1; flagname[nn] == '_' {	// User wants to look for --f* instead of --F*
-			flagname	= strings.ToLower(pp.Name[:1]) + pp.Name[1:nn]
+		flagname := pp.Name
+		if nn := len(pp.Name) - 1; flagname[nn] == '_' { // User wants to look for --f* instead of --F*
+			flagname = strings.ToLower(pp.Name[:1]) + pp.Name[1:nn]
 		}
 
-		splitChar := tag[0:1]
+		_, nn := utf8.DecodeRuneInString(tag)
+		splitChar := tag[0:nn]
 		if strings.Contains("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", splitChar) {
 			splitChar = "|"
 		} else {
-			tag = tag[1:]
+			tag = tag[len(splitChar):]
 		}
 
-		parts := strings.Split(tag, splitChar)
-		part0 := ""
-		part1 := ""
-		if len(parts) > 0 {
-			part0 = strings.TrimSpace(parts[0])
+		lastSplit := strings.LastIndex(tag, splitChar)
+		part0, part1 := "", ""
+		switch lastSplit > -1 {
+		case false:
+			part1 = strings.TrimSpace(tag)
+		case true:
+			part0, part1 = strings.TrimSpace(tag[:lastSplit]), strings.TrimSpace(tag[(lastSplit+1):])
 		}
-		if len(parts) > 1 {
-			part1 = strings.TrimSpace(parts[1])
-		}
+
 		if pp.Type.Kind() == reflect.Ptr {
 			switch pp.Type.String() {
 			case "*string":
@@ -134,7 +142,7 @@ func Parse(ss interface{}) {
 			}
 		}
 
-		if len(parts) == 1 {
+		if lastSplit < 0 {
 			switch pp.Type.Kind() {
 			case reflect.String:
 				flags.StringVar(vv.Addr().Interface().(*string), flagname, vv.String(), " <--default, string # "+part0)
@@ -152,7 +160,7 @@ func Parse(ss interface{}) {
 			}
 		}
 
-		if len(parts) == 2 {
+		if lastSplit >= 0 {
 			switch pp.Type.Kind() {
 			case reflect.String:
 				vv.SetString(part1)
@@ -179,17 +187,17 @@ func Parse(ss interface{}) {
 			}
 		}
 
-		if len(parts) > 0 {
+		if lastSplit >= 0 {
 			moreusage += "\n\t--" + flagname + ": " + part1 + " <-- Default, " + pp.Type.String() + " # " + part0
 		}
 	}
 
 	if pp, ok := sstype.FieldByName("Usage"); ok {
-		vv		:= ssvalue.FieldByName("Usage")
+		vv := ssvalue.FieldByName("Usage")
 		vv.SetString("\n Usage of " + progname + " # " + (string)(pp.Tag) + "\n ARGS:" + moreusage)
 	}
 
-	if hasBoolArg {
+	if hasBoolArg && !_permitStandaloneBool {
 		for _, arg := range args {
 			switch strings.ToLower(arg) {
 			case "true", "false":
@@ -209,9 +217,9 @@ func Parse(ss interface{}) {
 	// Set all pointer-type flags that actually had values set
 	for flagname := range pointers {
 		if visited[flagname] {
-			fieldname	:= flagname
+			fieldname := flagname
 			if flagname[:1] != strings.ToUpper(flagname[:1]) {
-				fieldname	= strings.ToUpper(flagname[:1]) + flagname[1:] + "_"
+				fieldname = strings.ToUpper(flagname[:1]) + flagname[1:] + "_"
 			}
 			pp, _ := sstype.FieldByName(fieldname)
 			vv := ssvalue.FieldByName(fieldname)

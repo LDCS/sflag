@@ -1,14 +1,15 @@
 package main
 
 import (
-	"github.com/LDCS/sflag"
 	"fmt"
+	"github.com/LDCS/sflag"
 )
 
 var opt = struct {
-	Args	[]string
+	Args []string
 }{}
 
+// shows how to retrieve unparsed flags out of os.Args[1:]
 func main() {
 	sflag.Parse(&opt)
 	for ii, aa := range opt.Args {

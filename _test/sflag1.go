@@ -5,8 +5,9 @@ import (
 )
 
 var opt = struct {
-	}{}
+}{}
 
+// Minimal example
 func main() {
 	sflag.Parse(&opt)
 }

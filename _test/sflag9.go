@@ -14,17 +14,17 @@ var opt = struct {
 	SomeCommand string  "! is command that might contain pipe char ! 'yes | head'"
 	Verbose     bool    "Bool flags require use of an equals sign syntax (i.e. \"var=value\") to be unambiguous		| false"
 	OutData     string  " must be writable | /an/output/file"
-	Args	    []string
-	Foo	    *int			// sflag will ignore both member and tag since it is initialized to non-nil pointer
-	Bar	    *int    "bar"	        // sflag will not look for default value in this tag, since it will be a nil pointer
-	Baz_        int     "Set by --baz, not --Baz             | 42"
-	ignoreMe    string			// sflag will ignore low-case members
-}{
- }
+	Args        []string
+	Foo         *int   // sflag will ignore both member and tag since it is initialized to non-nil pointer
+	Bar         *int   "bar" // sflag will not look for default value in this tag, since it will be a nil pointer
+	Baz_        int    "Set by --baz, not --Baz             | 42"
+	ignoreMe    string // sflag will ignore low-case members
+}{}
 
+// kitchen sink demo
 func main() {
-	foo	:= 1;
-	opt.Foo	= &foo		// sflag will ignore this variable since it is a non-nil pointer
+	foo := 1
+	opt.Foo = &foo // sflag will ignore this variable since it is a non-nil pointer
 
 	sflag.Parse(&opt)
 	fmt.Println("SomeFile=", opt.SomeFile)
